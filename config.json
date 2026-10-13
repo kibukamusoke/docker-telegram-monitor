@@ -1,0 +1,27 @@
+{
+  "include_containers": [],
+  "exclude_containers": [
+    "docker-telegram-monitor",
+    "tracksolAmplify",
+    "pos2-pos2-TMS-1"
+  ],
+  "cooldown_seconds": 300,
+  "disk_percent": 90,
+  "inode_percent": 90,
+  "restart_threshold": 3,
+  "restart_window_seconds": 300,
+  "log_categories": [
+    "http_502",
+    "http_503_504",
+    "network_unreachable",
+    "connection_refused",
+    "connection_reset",
+    "timeout",
+    "dns_failure",
+    "database_connection",
+    "out_of_memory",
+    "disk_full",
+    "router_collision",
+    "tls_failure"
+  ]
+}

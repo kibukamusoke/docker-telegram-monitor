@@ -1,47 +1,132 @@
-# Docker problem detector
+# Docker telegram monitor
 
-Source project lives on the laptop. Deploy a copy on the Linux Docker server;
-the setup discovers that server's Docker storage path. Nothing has been deployed
-or tested against your server by the author.
+Watches the containers on a Linux Docker host and sends a Telegram alert when
+something goes wrong: gateway errors in logs, unhealthy or crashed containers,
+restart loops, and low disk space. It runs as a single container on the host it
+monitors.
 
-## Build and push from the laptop
+Image: `appleberryd/docker-telegram-monitor` (linux/amd64 and linux/arm64).
+
+## Image builds
+
+GitHub Actions ([.github/workflows/docker-publish.yml](.github/workflows/docker-publish.yml))
+runs the tests, then builds and pushes the image on every push to `main`. Tags:
+
+- `latest`: the newest build from `main`
+- `sha-<commit>`: every build, for pinning or rolling back
+- `1.2.0` and `1.2`: when a `v1.2.0` git tag is pushed
+
+The workflow needs the repository secrets `DOCKER_USERNAME` and
+`DOCKER_PASSWORD` (a Docker Hub access token with Read & Write scope).
+
+## Install
+
+You need a Linux Docker host with the Docker Compose plugin, plus:
+
+- a Telegram bot token: create the bot with @BotFather, then send `/start` to it
+- your numeric Telegram chat ID
+
+On the Docker host, run:
 
 ```sh
-./deploy.sh
+wget -qO- https://raw.githubusercontent.com/kibukamusoke/docker-telegram-monitor/main/setup.sh | sudo bash
 ```
 
-Validates Python/config, runs tests, builds amd64 with Apple's `container` CLI,
-and pushes to `tracksolconnect.tms1:8830/docker_problem_detector:0.1` over HTTP.
-Override the image/tag with `IMAGE=tracksolconnect.tms1:8830/docker_problem_detector:0.2 ./deploy.sh`.
-Secrets are excluded from the build context. This publishes an image; it does
-not start or update containers on the server.
+The script:
 
-## Deploy
+1. installs to `/opt/docker-telegram-monitor`
+2. asks for the bot token and chat ID
+3. sends a Telegram test message
+4. starts the monitor
 
-Copy docker-compose.yml, config.json and setup.sh to any server folder, then enter that folder as root. Python runs inside the image; no host Python installation is needed:
+Python runs inside the image, so the host does not need Python installed.
+
+Check that it is running:
 
 ```sh
-bash setup.sh
-docker compose -f docker-compose.yml pull
-docker compose -f docker-compose.yml run --rm detector python -u /app/detector.py --test
-docker compose -f docker-compose.yml up -d
-docker compose -f docker-compose.yml ps
-docker logs --tail 30 docker-problem-detector
+docker logs --tail 30 docker-telegram-monitor
 ```
 
-Requires Bash, Docker Compose, a Telegram bot token, and your
-numeric chat ID. Create the bot with @BotFather and send /start to it first.
-Setup prompts for the token without echoing it. Proceed with `up` only after
-the Telegram test arrives. Expect healthy status after about 30 seconds.
+The container should report `healthy` after about 30 seconds.
 
-Edit `config.json` before deployment. Empty `include_containers` monitors all
-containers except exclusions. To limit scope, use e.g. `["traefik2", "tracksolerp2",
-"portainer"]`. Add intentionally retired/maintenance containers to exclusions.
-Restart the detector after configuration changes. Thresholds are configurable.
-If using a different tag, set `DETECTOR_IMAGE` in the server's `.env` file.
-The server Docker daemon must already allow your HTTP registry. Updates use
-`docker compose -f docker-compose.yml pull` followed by `docker compose -f docker-compose.yml up -d`. Detector code is now
-bundled in the image; configuration remains a local file mount.
+**Update:** run the same command again, or `sudo bash /opt/docker-telegram-monitor/setup.sh`.
+Updating pulls the latest image and keeps your `config.json`, `.env` and secrets.
+
+**Unattended install:** set the secrets as variables instead of answering prompts:
+
+```sh
+wget -qO- https://raw.githubusercontent.com/kibukamusoke/docker-telegram-monitor/main/setup.sh \
+  | sudo TELEGRAM_BOT_TOKEN='123:abc' TELEGRAM_CHAT_ID='-100123' bash
+```
+
+**Change the Telegram details:** delete the file under
+`/opt/docker-telegram-monitor/secrets/` and run the script again.
+
+**Uninstall:**
+
+```sh
+cd /opt/docker-telegram-monitor && sudo docker compose down -v
+sudo rm -rf /opt/docker-telegram-monitor
+```
+
+### Settings
+
+`/opt/docker-telegram-monitor/.env` (see [.env.example](.env.example)):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DETECTOR_IMAGE` | `appleberryd/docker-telegram-monitor:latest` | Image to run; pin a `sha-…` or version tag here |
+| `SERVER_NAME` | the host name | Name shown in alerts |
+| `DOCKER_CONTAINERS_DIR` | found by the script | Docker's container log directory on the host |
+| `DOCKER_SOCKET` | `/var/run/docker.sock` | Docker API socket |
+
+After editing `.env`, apply the change with
+`cd /opt/docker-telegram-monitor && sudo docker compose up -d`.
+
+## Run with `docker run` (no Compose)
+
+Run these commands as root:
+
+```sh
+mkdir -p /opt/docker-telegram-monitor/secrets && cd /opt/docker-telegram-monitor
+wget -q https://raw.githubusercontent.com/kibukamusoke/docker-telegram-monitor/main/config.json
+printf '%s' 'YOUR_BOT_TOKEN' > secrets/telegram_token
+printf '%s' 'YOUR_CHAT_ID'   > secrets/telegram_chat_id
+chmod 600 secrets/*
+
+docker run -d \
+  --name docker-telegram-monitor \
+  --restart unless-stopped \
+  --read-only --cap-drop ALL --security-opt no-new-privileges:true \
+  -e SERVER_NAME="$(hostname)" \
+  -v "$PWD/config.json:/app/config.json:ro" \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  -v "$(docker info --format '{{.DockerRootDir}}')/containers:/host-containers:ro" \
+  -v docker-telegram-monitor-state:/state \
+  -v "$PWD/secrets/telegram_token:/run/secrets/telegram_token:ro" \
+  -v "$PWD/secrets/telegram_chat_id:/run/secrets/telegram_chat_id:ro" \
+  --label traefik.enable=false \
+  --log-driver local --log-opt max-size=5m --log-opt max-file=2 \
+  --health-cmd "python -c \"import pathlib,time; assert time.time()-pathlib.Path('/state/heartbeat').stat().st_mtime < 90\"" \
+  --health-interval 30s --health-timeout 5s --health-retries 3 \
+  appleberryd/docker-telegram-monitor:latest
+```
+
+To send a test message, run
+`docker exec docker-telegram-monitor python -u /app/detector.py --test`.
+
+**Update:** `docker pull appleberryd/docker-telegram-monitor:latest`, then run
+`docker rm -f docker-telegram-monitor` and run the `docker run` command again.
+The state volume keeps read offsets and queued alerts.
+
+## Configuration
+
+Edit `/opt/docker-telegram-monitor/config.json`, then run
+`docker restart docker-telegram-monitor`. An empty `include_containers` list
+monitors every container except those in the exclusions. To limit scope, use for
+example `["traefik2", "tracksolerp2", "portainer"]`. Add containers that are
+intentionally retired or in maintenance to the exclusions. Alert thresholds are
+also set in this file.
 
 ## Checks and alerts
 
@@ -92,6 +177,5 @@ application failures. Use an external probe for complete request-path monitoring
 It does not diagnose or repair network issues. Healthcheck reports scan/log-read
 failure; Docker does not automatically restart an unhealthy container.
 
-Remove: `docker compose -f docker-compose.yml down` (keeps state). Delete local secrets separately.
-Tests: `python3 -m unittest -v test_detector.py`.
-# docker-telegram-monitor
+Run the tests locally with `python3 -m unittest -v test_detector.py`.
+

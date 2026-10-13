@@ -1,0 +1,46 @@
+services:
+  detector:
+    image: ${DETECTOR_IMAGE:-appleberryd/docker-telegram-monitor:latest}
+    container_name: docker-telegram-monitor
+    command: [python, -u, /app/detector.py]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      SERVER_NAME: ${SERVER_NAME:-docker-server}
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - type: bind
+        source: ${DOCKER_SOCKET:-/var/run/docker.sock}
+        target: /var/run/docker.sock
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${DOCKER_CONTAINERS_DIR:-/var/lib/docker/containers}
+        target: /host-containers
+        read_only: true
+        bind:
+          create_host_path: false
+      - state:/state
+    secrets: [telegram_token, telegram_chat_id]
+    labels:
+      traefik.enable: "false"
+    logging:
+      driver: local
+      options:
+        max-size: "5m"
+        max-file: "2"
+    healthcheck:
+      test: [CMD, python, -c, "import pathlib,time; assert time.time()-pathlib.Path('/state/heartbeat').stat().st_mtime < 90"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+volumes:
+  state:
+secrets:
+  telegram_token:
+    file: ./secrets/telegram_token
+  telegram_chat_id:
+    file: ./secrets/telegram_chat_id
