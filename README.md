@@ -26,15 +26,16 @@ You need a Linux Docker host with the Docker Compose plugin, plus:
 - a Telegram bot token: create the bot with @BotFather, then send `/start` to it
 - your numeric Telegram chat ID
 
-On the Docker host, run:
+On the Docker host, go to the folder you want to install into and run:
 
 ```sh
+mkdir -p docker-telegram-monitor && cd docker-telegram-monitor
 wget -qO- https://raw.githubusercontent.com/kibukamusoke/docker-telegram-monitor/main/setup.sh | sudo bash
 ```
 
 The script:
 
-1. installs to `/opt/docker-telegram-monitor`
+1. installs into the current folder
 2. asks for the bot token and chat ID
 3. sends a Telegram test message
 4. starts the monitor
@@ -49,7 +50,9 @@ docker logs --tail 30 docker-telegram-monitor
 
 The container should report `healthy` after about 30 seconds.
 
-**Update:** run the same command again, or `sudo bash /opt/docker-telegram-monitor/setup.sh`.
+The commands below are run from that install folder.
+
+**Update:** `sudo bash setup.sh`, or run the `wget` command again in the same folder.
 Updating pulls the latest image and keeps your `config.json`, `.env` and secrets.
 
 **Unattended install:** set the secrets as variables instead of answering prompts:
@@ -59,19 +62,18 @@ wget -qO- https://raw.githubusercontent.com/kibukamusoke/docker-telegram-monitor
   | sudo TELEGRAM_BOT_TOKEN='123:abc' TELEGRAM_CHAT_ID='-100123' bash
 ```
 
-**Change the Telegram details:** delete the file under
-`/opt/docker-telegram-monitor/secrets/` and run the script again.
+**Rotate the Telegram bot token or chat ID:** see [Rotating Telegram secrets](#rotating-telegram-secrets).
 
 **Uninstall:**
 
 ```sh
-cd /opt/docker-telegram-monitor && sudo docker compose down -v
-sudo rm -rf /opt/docker-telegram-monitor
+sudo docker compose down -v
+cd .. && sudo rm -rf docker-telegram-monitor
 ```
 
 ### Settings
 
-`/opt/docker-telegram-monitor/.env` (see [.env.example](.env.example)):
+`.env` in the install folder (see [.env.example](.env.example)):
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -81,14 +83,14 @@ sudo rm -rf /opt/docker-telegram-monitor
 | `DOCKER_SOCKET` | `/var/run/docker.sock` | Docker API socket |
 
 After editing `.env`, apply the change with
-`cd /opt/docker-telegram-monitor && sudo docker compose up -d`.
+`sudo docker compose up -d`.
 
 ## Run with `docker run` (no Compose)
 
-Run these commands as root:
+Run these commands as root, from the folder you want to use:
 
 ```sh
-mkdir -p /opt/docker-telegram-monitor/secrets && cd /opt/docker-telegram-monitor
+mkdir -p secrets
 wget -q https://raw.githubusercontent.com/kibukamusoke/docker-telegram-monitor/main/config.json
 printf '%s' 'YOUR_BOT_TOKEN' > secrets/telegram_token
 printf '%s' 'YOUR_CHAT_ID'   > secrets/telegram_chat_id
@@ -119,9 +121,46 @@ To send a test message, run
 `docker rm -f docker-telegram-monitor` and run the `docker run` command again.
 The state volume keeps read offsets and queued alerts.
 
+## Rotating Telegram secrets
+
+Do this when the bot token may have leaked, or when alerts should go to a different chat.
+
+1. To get a new token, message @BotFather, send `/revoke`, and pick the bot.
+   The old token stops working at once. Alerts raised before you finish are
+   queued and retried, so none are lost.
+2. Run from the install folder:
+
+   ```sh
+   sudo bash setup.sh --rotate-secrets
+   ```
+
+   Enter the new token and/or chat ID. Leave a prompt blank to keep the current
+   value. The script sends a test message with the new values. If the test
+   fails, the old values are put back and nothing is restarted. If it succeeds,
+   the monitor is recreated with the new values.
+
+For an unattended rotation, pass only the value that changes:
+
+```sh
+sudo TELEGRAM_BOT_TOKEN='123:new' bash setup.sh --rotate-secrets
+```
+
+**With `docker run`:** from the folder holding `secrets/`, overwrite the files in
+place (don't delete them first), send a test, then restart:
+
+```sh
+printf '%s' 'NEW_BOT_TOKEN' > secrets/telegram_token
+printf '%s' 'NEW_CHAT_ID'   > secrets/telegram_chat_id   # only if it changed
+docker exec docker-telegram-monitor python -u /app/detector.py --test
+docker restart docker-telegram-monitor
+```
+
+Deleting and recreating a secret file leaves the running container reading the
+old file, so always overwrite in place, or remove and re-create the container.
+
 ## Configuration
 
-Edit `/opt/docker-telegram-monitor/config.json`, then run
+Edit `config.json` in the install folder, then run
 `docker restart docker-telegram-monitor`. An empty `include_containers` list
 monitors every container except those in the exclusions. To limit scope, use for
 example `["traefik2", "tracksolerp2", "portainer"]`. Add containers that are
